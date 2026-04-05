@@ -1,20 +1,20 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useState, useEffect, useRef } from 'react'
-import { Track, ConnectionState } from 'livekit-client'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { ConnectionState } from 'livekit-client'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
-  useTracks,
-  VideoTrack,
   useConnectionState,
   useRoomContext,
   useParticipants,
   useLocalParticipant,
+  useDataChannel,
 } from '@livekit/components-react'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
+const SCREEN_PREFIX = 'SCREEN:'
 
 export default function MeetPage() {
   const { roomId } = useParams()
@@ -27,14 +27,12 @@ export default function MeetPage() {
   useEffect(() => {
     if (!roomId) return
 
-    // Allow direct token injection via query param (for testing / manual triggers)
+    // Allow direct token injection via query param (for testing)
     const params = new URLSearchParams(window.location.search)
     const directToken = params.get('token')
-    const directUrl   = params.get('livekit_url') || 'wss://livekit.fairshift.co'
-
     if (directToken) {
       setToken(directToken)
-      setLivekitUrl(directUrl)
+      setLivekitUrl(params.get('livekit_url') || 'wss://livekit.fairshift.co')
       setCallInfo({ agent_name: 'Emma' })
       setState(STATE.LOBBY)
       return
@@ -158,16 +156,31 @@ function CallUI({ agentName, onLeave }) {
   const { localParticipant } = useLocalParticipant()
   const isConnected = connectionState === ConnectionState.Connected
 
-  // Emma's screenshare
-  const screenTracks = useTracks([Track.Source.ScreenShare], { onlySubscribed: true })
-  const agentScreen = screenTracks.find(t => t.participant.identity.startsWith('agent_'))
+  const [screenshotUrl, setScreenshotUrl] = useState(null)
+  const prevUrlRef = useRef(null)
 
-  // Camera tracks (for participant tiles)
-  const cameraTracks = useTracks([Track.Source.Camera], { onlySubscribed: true })
-
-  // Separate agent vs prospect participants
   const agentParticipant  = participants.find(p => p.identity.startsWith('agent_'))
   const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
+
+  // Receive screenshot frames from Emma via data channel
+  const onDataReceived = useCallback((msg) => {
+    try {
+      const data = msg.payload  // Uint8Array
+      // Check prefix: 'SCREEN:' = 7 bytes
+      const prefix = new TextDecoder().decode(data.slice(0, 7))
+      if (prefix !== SCREEN_PREFIX) return
+
+      const jpgBytes = data.slice(7)
+      const blob = new Blob([jpgBytes], { type: 'image/jpeg' })
+      const newUrl = URL.createObjectURL(blob)
+      setScreenshotUrl(newUrl)
+      // Revoke previous blob URL to avoid memory leak
+      if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current)
+      prevUrlRef.current = newUrl
+    } catch {}
+  }, [])
+
+  useDataChannel(undefined, onDataReceived)
 
   const handleLeave = () => {
     try { room.disconnect() } catch {}
@@ -199,16 +212,16 @@ function CallUI({ agentName, onLeave }) {
       {/* Main area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
 
-        {/* Screen share — main content */}
-        <div style={{ flex: 1, background: '#0a0a0a', position: 'relative', overflow: 'hidden' }}>
-          {agentScreen ? (
-            <VideoTrack
-              trackRef={agentScreen}
-              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        {/* Screen — JPEG screenshots from Emma's Playwright browser */}
+        <div style={{ flex: 1, background: '#0a0a0a', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {screenshotUrl ? (
+            <img
+              src={screenshotUrl}
+              alt="Emma's screen"
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
             />
           ) : (
             <div style={{
-              width: '100%', height: '100%',
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center', gap: 16,
             }}>
@@ -228,7 +241,7 @@ function CallUI({ agentName, onLeave }) {
 
         {/* Participant sidebar */}
         <div style={{
-          width: 180, background: '#1a1a1a',
+          width: 160, background: '#1a1a1a',
           borderLeft: '1px solid rgba(255,255,255,0.06)',
           display: 'flex', flexDirection: 'column', gap: 8,
           padding: 10, flexShrink: 0, overflowY: 'auto',
@@ -238,24 +251,21 @@ function CallUI({ agentName, onLeave }) {
             name={agentName}
             isAgent={true}
             isSpeaking={agentParticipant?.isSpeaking}
-            cameraTrack={cameraTracks.find(t => t.participant.identity.startsWith('agent_'))}
           />
 
-          {/* Local participant (Shruti) */}
+          {/* Local participant */}
           <ParticipantCard
             name={localParticipant?.identity?.replace('prospect_', '') || 'You'}
             isLocal={true}
             isSpeaking={localParticipant?.isSpeaking}
-            cameraTrack={null}
           />
 
-          {/* Other remote humans if any */}
+          {/* Other humans */}
           {humanParticipants.map(p => (
             <ParticipantCard
               key={p.identity}
               name={p.identity.replace('prospect_', '').replace('host_', '')}
               isSpeaking={p.isSpeaking}
-              cameraTrack={cameraTracks.find(t => t.participant.identity === p.identity)}
             />
           ))}
         </div>
@@ -273,8 +283,8 @@ function CallUI({ agentName, onLeave }) {
   )
 }
 
-// ─── Participant card (Zoom-style tile) ───────────────────────────────────────
-function ParticipantCard({ name, isAgent, isLocal, isSpeaking, cameraTrack }) {
+// ─── Participant card ─────────────────────────────────────────────────────────
+function ParticipantCard({ name, isAgent, isLocal, isSpeaking }) {
   const displayName = isLocal ? `${name} (You)` : name
   return (
     <div style={{
@@ -284,27 +294,16 @@ function ParticipantCard({ name, isAgent, isLocal, isSpeaking, cameraTrack }) {
       transition: 'border-color 0.15s',
       flexShrink: 0,
     }}>
-      <div style={{ position: 'relative', paddingTop: '75%' /* 4:3 aspect ratio */ }}>
-        {cameraTrack ? (
-          <VideoTrack
-            trackRef={cameraTrack}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        ) : (
-          <div style={{
-            position: 'absolute', inset: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: isAgent ? 'linear-gradient(135deg, #3d2882, #7c5cfc)' : '#1e1e2e',
-          }}>
-            <AgentAvatar name={isAgent ? name : name[0]?.toUpperCase() || '?'} size={44} speaking={isSpeaking} isAgent={isAgent} />
-          </div>
-        )}
-        {/* Speaking indicator */}
+      <div style={{ position: 'relative', paddingTop: '75%' }}>
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: isAgent ? 'linear-gradient(135deg, #3d2882, #7c5cfc)' : '#1e1e2e',
+        }}>
+          <AgentAvatar name={isAgent ? name : name[0]?.toUpperCase() || '?'} size={44} speaking={isSpeaking} isAgent={isAgent} />
+        </div>
         {isSpeaking && (
-          <div style={{
-            position: 'absolute', bottom: 6, left: 6,
-            display: 'flex', gap: 2, alignItems: 'flex-end',
-          }}>
+          <div style={{ position: 'absolute', bottom: 6, left: 6, display: 'flex', gap: 2, alignItems: 'flex-end' }}>
             {[1,2,3].map(i => (
               <style key={`s${i}`}>{`@keyframes bar${i}{0%,100%{height:4px}50%{height:${4+i*4}px}}`}</style>
             ))}
@@ -317,7 +316,6 @@ function ParticipantCard({ name, isAgent, isLocal, isSpeaking, cameraTrack }) {
           </div>
         )}
       </div>
-      {/* Name bar */}
       <div style={{
         padding: '5px 8px', fontSize: 11, color: 'rgba(255,255,255,0.7)',
         fontWeight: 600, background: '#111', overflow: 'hidden',
@@ -330,7 +328,7 @@ function ParticipantCard({ name, isAgent, isLocal, isSpeaking, cameraTrack }) {
   )
 }
 
-// ─── Agent avatar circle ──────────────────────────────────────────────────────
+// ─── Shared components ────────────────────────────────────────────────────────
 function AgentAvatar({ name, size = 48, speaking, isAgent }) {
   return (
     <div style={{
@@ -339,8 +337,7 @@ function AgentAvatar({ name, size = 48, speaking, isAgent }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontSize: size * 0.38, fontWeight: 900, color: '#fff',
       boxShadow: speaking ? `0 0 0 3px #22C55E, 0 0 12px rgba(34,197,94,0.4)` : 'none',
-      transition: 'box-shadow 0.2s',
-      flexShrink: 0,
+      transition: 'box-shadow 0.2s', flexShrink: 0,
     }}>
       {(name || '?')[0].toUpperCase()}
     </div>
