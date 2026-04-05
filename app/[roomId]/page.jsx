@@ -1,8 +1,8 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useState, useEffect } from 'react'
-import { Track } from 'livekit-client'
+import { useState, useEffect, useRef } from 'react'
+import { Track, ConnectionState } from 'livekit-client'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -10,8 +10,9 @@ import {
   VideoTrack,
   useConnectionState,
   useRoomContext,
+  useParticipants,
+  useLocalParticipant,
 } from '@livekit/components-react'
-import { ConnectionState } from 'livekit-client'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
 
@@ -23,11 +24,9 @@ export default function MeetPage() {
   const [callInfo,   setCallInfo]   = useState(null)
   const [error,      setError]      = useState(null)
 
-  const API = 'https://api.fairshift.co'
-
   useEffect(() => {
     if (!roomId) return
-    fetch(`${API}/api/emma/calls/public/${roomId}`)
+    fetch(`https://api.fairshift.co/api/emma/calls/public/${roomId}`)
       .then(r => {
         if (r.status === 410) throw new Error('This call has already ended.')
         if (!r.ok)             throw new Error('Call not found or has expired.')
@@ -48,9 +47,9 @@ export default function MeetPage() {
     <FullScreen>
       <div style={{ textAlign: 'center', maxWidth: 380, padding: '0 24px' }}>
         <div style={{ fontSize: 44, marginBottom: 18 }}>😔</div>
-        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 10, color: '#fff' }}>Something went wrong</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 10 }}>Something went wrong</div>
         <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', lineHeight: 1.7 }}>{error}</div>
-        <div style={{ marginTop: 24, fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
+        <div style={{ marginTop: 24, fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>
           Contact us: <a href="https://fairshift.co" style={{ color: '#7c5cfc' }}>fairshift.co</a>
         </div>
       </div>
@@ -61,10 +60,9 @@ export default function MeetPage() {
     <FullScreen>
       <div style={{ textAlign: 'center', maxWidth: 380, padding: '0 24px' }}>
         <div style={{ fontSize: 44, marginBottom: 18 }}>👋</div>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12, color: '#fff' }}>Thanks for your time!</div>
-        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.55)', lineHeight: 1.7 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginBottom: 12 }}>Thanks for your time!</div>
+        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', lineHeight: 1.7 }}>
           A summary of what we discussed will be sent to your email shortly.
-          We look forward to speaking again soon.
         </div>
         <a href="https://fairshift.co" style={{
           display: 'inline-block', marginTop: 28, padding: '12px 28px',
@@ -80,48 +78,38 @@ export default function MeetPage() {
   if (state === STATE.LOBBY) return (
     <FullScreen>
       <div style={{ width: '100%', maxWidth: 420, padding: '0 24px' }}>
-        {/* Logo */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 36 }}>
           <div style={{
             width: 52, height: 52, borderRadius: 16, background: '#7c5cfc',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 22, fontWeight: 900, color: '#fff', letterSpacing: -1,
+            fontSize: 22, fontWeight: 900, color: '#fff',
           }}>F</div>
         </div>
-
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div style={{ fontSize: 24, fontWeight: 800, color: '#fff', marginBottom: 10 }}>
             {callInfo?.agent_name || 'Emma'} is ready for you
           </div>
           <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', lineHeight: 1.7 }}>
             You're about to join a live Fairshift product demo.
-            Emma will walk you through the platform and answer your questions.
           </div>
         </div>
-
-        {/* Mic note */}
         <div style={{
           background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
           borderRadius: 14, padding: '16px 20px', marginBottom: 28,
           display: 'flex', gap: 14, alignItems: 'flex-start',
         }}>
-          <span style={{ fontSize: 22, flexShrink: 0, lineHeight: 1 }}>🎤</span>
+          <span style={{ fontSize: 22, flexShrink: 0 }}>🎤</span>
           <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6 }}>
-            Your browser will ask for microphone access. Please allow it — Emma needs to hear you to have a conversation.
+            Please allow microphone access when your browser asks — Emma needs to hear you.
           </div>
         </div>
-
-        <button
-          onClick={() => setState(STATE.CALL)}
-          style={{
-            width: '100%', padding: '15px', borderRadius: 14,
-            background: '#7c5cfc', color: '#fff', border: 'none',
-            fontSize: 16, fontWeight: 700, cursor: 'pointer',
-          }}
-        >
+        <button onClick={() => setState(STATE.CALL)} style={{
+          width: '100%', padding: '15px', borderRadius: 14,
+          background: '#7c5cfc', color: '#fff', border: 'none',
+          fontSize: 16, fontWeight: 700, cursor: 'pointer',
+        }}>
           Join Call with Emma
         </button>
-
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: 'rgba(255,255,255,0.25)' }}>
           No account or app required · This call may be recorded
         </div>
@@ -130,7 +118,7 @@ export default function MeetPage() {
   )
 
   if (state === STATE.CALL) return (
-    <div style={{ height: '100dvh', background: '#0a0a0a', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100dvh', background: '#111', display: 'flex', flexDirection: 'column' }}>
       <LiveKitRoom
         token={token}
         serverUrl={livekitUrl}
@@ -148,18 +136,24 @@ export default function MeetPage() {
   return null
 }
 
-// ─── Call UI (inside LiveKitRoom context) ─────────────────────────────────────
+// ─── Call UI ──────────────────────────────────────────────────────────────────
 function CallUI({ agentName, onLeave }) {
   const connectionState = useConnectionState()
   const room = useRoomContext()
-
-  // Get Emma's screenshare track specifically
-  const screenTracks = useTracks([Track.Source.ScreenShare], { onlySubscribed: true })
-  const agentScreen = screenTracks.find(t =>
-    t.participant.identity.startsWith('agent_')
-  )
-
+  const participants = useParticipants()
+  const { localParticipant } = useLocalParticipant()
   const isConnected = connectionState === ConnectionState.Connected
+
+  // Emma's screenshare
+  const screenTracks = useTracks([Track.Source.ScreenShare], { onlySubscribed: true })
+  const agentScreen = screenTracks.find(t => t.participant.identity.startsWith('agent_'))
+
+  // Camera tracks (for participant tiles)
+  const cameraTracks = useTracks([Track.Source.Camera], { onlySubscribed: true })
+
+  // Separate agent vs prospect participants
+  const agentParticipant  = participants.find(p => p.identity.startsWith('agent_'))
+  const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
 
   const handleLeave = () => {
     try { room.disconnect() } catch {}
@@ -167,103 +161,224 @@ function CallUI({ agentName, onLeave }) {
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Audio — renders all room audio automatically */}
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <RoomAudioRenderer />
 
       {/* Header */}
       <div style={{
-        padding: '12px 20px', flexShrink: 0,
-        display: 'flex', alignItems: 'center', gap: 12,
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        background: 'rgba(0,0,0,0.4)',
+        padding: '10px 16px', flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 10,
+        background: '#1a1a1a', borderBottom: '1px solid rgba(255,255,255,0.06)',
       }}>
         <div style={{
-          width: 30, height: 30, borderRadius: 9, background: '#7c5cfc',
+          width: 28, height: 28, borderRadius: 8, background: '#7c5cfc',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 13, fontWeight: 900, color: '#fff',
+          fontSize: 12, fontWeight: 900, color: '#fff',
         }}>F</div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>
-          Fairshift Demo — {agentName}
-        </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          {/* Connection indicator */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: isConnected ? '#22C55E' : 'rgba(255,255,255,0.4)' }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: isConnected ? '#22C55E' : 'rgba(255,255,255,0.3)',
-              display: 'inline-block',
-            }} />
-            {isConnected ? 'Live' : 'Connecting…'}
-          </div>
-          {/* Leave button */}
-          <button onClick={handleLeave} style={{
-            marginLeft: 8, padding: '6px 14px', borderRadius: 8,
-            background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
-            color: '#EF4444', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-          }}>
-            Leave
-          </button>
+        <span style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>Fairshift Demo</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <LiveIndicator isLive={isConnected} />
+          <LeaveButton onClick={handleLeave} />
         </div>
       </div>
 
-      {/* Main video area */}
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden', background: '#0a0a0a' }}>
-        {agentScreen ? (
-          // Emma's screenshare — fills the frame
-          <VideoTrack
-            trackRef={agentScreen}
-            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-          />
-        ) : (
-          // Waiting for screen share
-          <div style={{
-            width: '100%', height: '100%',
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center', gap: 16,
-          }}>
+      {/* Main area */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+
+        {/* Screen share — main content */}
+        <div style={{ flex: 1, background: '#0a0a0a', position: 'relative', overflow: 'hidden' }}>
+          {agentScreen ? (
+            <VideoTrack
+              trackRef={agentScreen}
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            />
+          ) : (
             <div style={{
-              width: 64, height: 64, borderRadius: 20, background: '#7c5cfc',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 28, fontWeight: 900, color: '#fff',
-            }}>E</div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 8 }}>
-                {isConnected ? `${agentName} is preparing your demo…` : 'Connecting…'}
+              width: '100%', height: '100%',
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 16,
+            }}>
+              <AgentAvatar name={agentName} size={72} speaking={agentParticipant?.isSpeaking} />
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', marginBottom: 6 }}>
+                  {isConnected ? `${agentName} is preparing your demo…` : 'Connecting…'}
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
+                  Audio is live — you'll hear {agentName} shortly
+                </div>
               </div>
-              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
-                Audio is active — you'll hear {agentName} shortly
-              </div>
+              <PulsingDots />
             </div>
-            {/* Animated dots */}
-            <style>{`@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}} .dot{animation:bounce 1.2s infinite} .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}`}</style>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {[0,1,2].map(i => (
-                <div key={i} className={`dot`} style={{ width: 7, height: 7, borderRadius: '50%', background: '#7c5cfc', opacity: 0.7 }} />
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* Participant sidebar */}
+        <div style={{
+          width: 180, background: '#1a1a1a',
+          borderLeft: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex', flexDirection: 'column', gap: 8,
+          padding: 10, flexShrink: 0, overflowY: 'auto',
+        }}>
+          {/* Emma tile */}
+          <ParticipantCard
+            name={agentName}
+            isAgent={true}
+            isSpeaking={agentParticipant?.isSpeaking}
+            cameraTrack={cameraTracks.find(t => t.participant.identity.startsWith('agent_'))}
+          />
+
+          {/* Local participant (Shruti) */}
+          <ParticipantCard
+            name={localParticipant?.identity?.replace('prospect_', '') || 'You'}
+            isLocal={true}
+            isSpeaking={localParticipant?.isSpeaking}
+            cameraTrack={null}
+          />
+
+          {/* Other remote humans if any */}
+          {humanParticipants.map(p => (
+            <ParticipantCard
+              key={p.identity}
+              name={p.identity.replace('prospect_', '').replace('host_', '')}
+              isSpeaking={p.isSpeaking}
+              cameraTrack={cameraTracks.find(t => t.participant.identity === p.identity)}
+            />
+          ))}
+        </div>
       </div>
 
-      {/* Bottom bar — mic status */}
+      {/* Footer */}
       <div style={{
-        padding: '10px 20px', flexShrink: 0, textAlign: 'center',
-        fontSize: 12, color: 'rgba(255,255,255,0.3)',
-        background: 'rgba(0,0,0,0.4)',
-        borderTop: '1px solid rgba(255,255,255,0.04)',
+        padding: '8px 16px', flexShrink: 0, textAlign: 'center',
+        fontSize: 12, color: 'rgba(255,255,255,0.25)',
+        background: '#1a1a1a', borderTop: '1px solid rgba(255,255,255,0.04)',
       }}>
-        🎤 Your microphone is active — speak naturally to talk with {agentName}
+        🎤 Speak naturally — {agentName} is listening
       </div>
     </div>
   )
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Participant card (Zoom-style tile) ───────────────────────────────────────
+function ParticipantCard({ name, isAgent, isLocal, isSpeaking, cameraTrack }) {
+  const displayName = isLocal ? `${name} (You)` : name
+  return (
+    <div style={{
+      borderRadius: 12,
+      border: isSpeaking ? '2px solid #22C55E' : '2px solid rgba(255,255,255,0.08)',
+      overflow: 'hidden', background: '#111',
+      transition: 'border-color 0.15s',
+      flexShrink: 0,
+    }}>
+      <div style={{ position: 'relative', paddingTop: '75%' /* 4:3 aspect ratio */ }}>
+        {cameraTrack ? (
+          <VideoTrack
+            trackRef={cameraTrack}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: isAgent ? 'linear-gradient(135deg, #3d2882, #7c5cfc)' : '#1e1e2e',
+          }}>
+            <AgentAvatar name={isAgent ? name : name[0]?.toUpperCase() || '?'} size={44} speaking={isSpeaking} isAgent={isAgent} />
+          </div>
+        )}
+        {/* Speaking indicator */}
+        {isSpeaking && (
+          <div style={{
+            position: 'absolute', bottom: 6, left: 6,
+            display: 'flex', gap: 2, alignItems: 'flex-end',
+          }}>
+            {[1,2,3].map(i => (
+              <style key={`s${i}`}>{`@keyframes bar${i}{0%,100%{height:4px}50%{height:${4+i*4}px}}`}</style>
+            ))}
+            {[1,2,3].map(i => (
+              <div key={i} style={{
+                width: 3, height: 4, background: '#22C55E', borderRadius: 2,
+                animation: `bar${i} ${0.5 + i * 0.15}s ease infinite`,
+              }} />
+            ))}
+          </div>
+        )}
+      </div>
+      {/* Name bar */}
+      <div style={{
+        padding: '5px 8px', fontSize: 11, color: 'rgba(255,255,255,0.7)',
+        fontWeight: 600, background: '#111', overflow: 'hidden',
+        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>
+        {isAgent && <span style={{ marginRight: 4 }}>🤖</span>}
+        {displayName}
+      </div>
+    </div>
+  )
+}
+
+// ─── Agent avatar circle ──────────────────────────────────────────────────────
+function AgentAvatar({ name, size = 48, speaking, isAgent }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      background: isAgent !== false ? 'linear-gradient(135deg, #5b3fc4, #7c5cfc)' : '#2a2a3e',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.38, fontWeight: 900, color: '#fff',
+      boxShadow: speaking ? `0 0 0 3px #22C55E, 0 0 12px rgba(34,197,94,0.4)` : 'none',
+      transition: 'box-shadow 0.2s',
+      flexShrink: 0,
+    }}>
+      {(name || '?')[0].toUpperCase()}
+    </div>
+  )
+}
+
+function LiveIndicator({ isLive }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+      color: isLive ? '#22C55E' : 'rgba(255,255,255,0.3)' }}>
+      <span style={{
+        width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+        background: isLive ? '#22C55E' : 'rgba(255,255,255,0.2)',
+      }} />
+      {isLive ? 'Live' : 'Connecting…'}
+    </div>
+  )
+}
+
+function LeaveButton({ onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: '6px 14px', borderRadius: 8,
+      background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
+      color: '#EF4444', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+    }}>
+      Leave
+    </button>
+  )
+}
+
+function PulsingDots() {
+  return (
+    <>
+      <style>{`@keyframes bd{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}`}</style>
+      <div style={{ display: 'flex', gap: 6 }}>
+        {[0,1,2].map(i => (
+          <div key={i} style={{
+            width: 7, height: 7, borderRadius: '50%', background: '#7c5cfc', opacity: 0.7,
+            animation: `bd 1.2s ease infinite`, animationDelay: `${i * 0.2}s`,
+          }} />
+        ))}
+      </div>
+    </>
+  )
+}
+
 function FullScreen({ children }) {
   return (
     <div style={{
-      minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      minHeight: '100dvh', display: 'flex',
+      alignItems: 'center', justifyContent: 'center',
       background: '#0d0d0d',
     }}>
       {children}
@@ -277,8 +392,7 @@ function Spinner() {
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       <div style={{
         width: 32, height: 32, borderRadius: '50%',
-        border: '3px solid rgba(255,255,255,0.08)',
-        borderTopColor: '#7c5cfc',
+        border: '3px solid rgba(255,255,255,0.08)', borderTopColor: '#7c5cfc',
         animation: 'spin 0.8s linear infinite',
       }} />
     </>
