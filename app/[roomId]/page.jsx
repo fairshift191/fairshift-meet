@@ -26,6 +26,20 @@ export default function MeetPage() {
 
   useEffect(() => {
     if (!roomId) return
+
+    // Allow direct token injection via query param (for testing / manual triggers)
+    const params = new URLSearchParams(window.location.search)
+    const directToken = params.get('token')
+    const directUrl   = params.get('livekit_url') || 'wss://livekit.fairshift.co'
+
+    if (directToken) {
+      setToken(directToken)
+      setLivekitUrl(directUrl)
+      setCallInfo({ agent_name: 'Emma' })
+      setState(STATE.LOBBY)
+      return
+    }
+
     fetch(`https://api.fairshift.co/api/emma/calls/public/${roomId}`)
       .then(r => {
         if (r.status === 410) throw new Error('This call has already ended.')
