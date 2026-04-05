@@ -62,7 +62,7 @@ export default function MeetPage() {
         <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Something went wrong</div>
         <div style={{ color: 'var(--fs-muted)', fontSize: 14 }}>{error}</div>
         <div style={{ marginTop: 20, fontSize: 13, color: 'var(--fs-muted)' }}>
-          Contact us: <a href="mailto:shruti@fairshift.co" style={{ color: 'var(--fs-green)' }}>shruti@fairshift.co</a>
+          Contact us: <a href="https://fairshift.co" style={{ color: 'var(--fs-green)' }}>fairshift.co</a>
         </div>
       </div>
     </Screen>
