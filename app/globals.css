@@ -1,0 +1,26 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --fs-green: #3FB68B;
+  --fs-dark:  #090A0E;
+  --fs-card:  #0E1118;
+  --fs-border: rgba(255,255,255,0.08);
+  --fs-text:   #E8EAF6;
+  --fs-muted:  rgba(232,234,246,0.5);
+}
+
+html, body {
+  height: 100%;
+  background: var(--fs-dark);
+  color: var(--fs-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Override LiveKit default dark theme */
+[data-lk-theme] {
+  --lk-bg: var(--fs-dark);
+  --lk-bg2: var(--fs-card);
+  --lk-border-color: var(--fs-border);
+  --lk-accent: var(--fs-green);
+}
