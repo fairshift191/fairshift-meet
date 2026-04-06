@@ -162,11 +162,14 @@ function CallUI({ agentName, onLeave }) {
   const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
 
   // Receive screenshot frames via raw room DataReceived event (topic: 'screen')
+  // Falls back to JPEG magic byte detection if topic isn't propagated by the LiveKit relay
   useEffect(() => {
     if (!room) return
+    const JPEG_MAGIC_1 = 0xFF, JPEG_MAGIC_2 = 0xD8
     const handler = (payload, participant, kind, topic) => {
       try {
-        if (topic !== 'screen') return
+        const isScreen = topic === 'screen' || (payload[0] === JPEG_MAGIC_1 && payload[1] === JPEG_MAGIC_2)
+        if (!isScreen) return
         const blob = new Blob([payload], { type: 'image/jpeg' })
         const newUrl = URL.createObjectURL(blob)
         setScreenshotUrl(newUrl)
