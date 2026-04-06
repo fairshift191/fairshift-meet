@@ -1,8 +1,9 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ConnectionState } from 'livekit-client'
+import { RoomEvent } from 'livekit-client'
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -10,11 +11,9 @@ import {
   useRoomContext,
   useParticipants,
   useLocalParticipant,
-  useDataChannel,
 } from '@livekit/components-react'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
-const SCREEN_PREFIX = 'SCREEN:'
 
 export default function MeetPage() {
   const { roomId } = useParams()
@@ -162,25 +161,22 @@ function CallUI({ agentName, onLeave }) {
   const agentParticipant  = participants.find(p => p.identity.startsWith('agent_'))
   const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
 
-  // Receive screenshot frames from Emma via data channel
-  const onDataReceived = useCallback((msg) => {
-    try {
-      const data = msg.payload  // Uint8Array
-      // Check prefix: 'SCREEN:' = 7 bytes
-      const prefix = new TextDecoder().decode(data.slice(0, 7))
-      if (prefix !== SCREEN_PREFIX) return
-
-      const jpgBytes = data.slice(7)
-      const blob = new Blob([jpgBytes], { type: 'image/jpeg' })
-      const newUrl = URL.createObjectURL(blob)
-      setScreenshotUrl(newUrl)
-      // Revoke previous blob URL to avoid memory leak
-      if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current)
-      prevUrlRef.current = newUrl
-    } catch {}
-  }, [])
-
-  useDataChannel(undefined, onDataReceived)
+  // Receive screenshot frames via raw room DataReceived event (topic: 'screen')
+  useEffect(() => {
+    if (!room) return
+    const handler = (payload, participant, kind, topic) => {
+      try {
+        if (topic !== 'screen') return
+        const blob = new Blob([payload], { type: 'image/jpeg' })
+        const newUrl = URL.createObjectURL(blob)
+        setScreenshotUrl(newUrl)
+        if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current)
+        prevUrlRef.current = newUrl
+      } catch {}
+    }
+    room.on(RoomEvent.DataReceived, handler)
+    return () => room.off(RoomEvent.DataReceived, handler)
+  }, [room])
 
   const handleLeave = () => {
     try { room.disconnect() } catch {}
