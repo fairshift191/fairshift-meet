@@ -183,29 +183,43 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     const initAnam = async () => {
       try {
         const res = await fetch(`https://api.fairshift.co/api/emma/calls/avatar-session/${roomId}`, { method: 'POST' })
-        if (!res.ok || cancelled) return
-        const { sessionToken } = await res.json()
+        if (!res.ok || cancelled) {
+          console.warn('[meet] avatar-session failed:', res.status, await res.text().catch(() => ''))
+          return
+        }
+        const data = await res.json()
+        const sessionToken = data.sessionToken
         if (!sessionToken || cancelled) return
 
-        const client = createClient(sessionToken)
+        // disableInputAudio: true — Anam must NOT grab the mic.
+        // LiveKit already owns the mic for Emma's prospect audio pipeline.
+        const client = createClient(sessionToken, { disableInputAudio: true })
         anamClientRef.current = client
+
+        // Create the audio input stream immediately after client is created —
+        // before streamToVideoElement so it's ready when CONNECTION_ESTABLISHED fires
+        audioStreamRef.current = client.createAgentAudioInputStream({
+          encoding: 'pcm_s16le',
+          sampleRate: 24000,
+          channels: 1,
+        })
 
         client.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
           if (cancelled) return
+          console.log('[meet] Anam connected — avatar ready')
           setAnamReady(true)
-          // Create audio stream for lip-sync passthrough
-          audioStreamRef.current = client.createAgentAudioInputStream({
-            encoding: 'pcm_s16le',
-            sampleRate: 24000,
-            channels: 1,
-          })
         })
 
         client.addListener(AnamEvent.USER_SPEECH_STARTED, () => {
-          client.interruptPersona()
+          try { client.interruptPersona() } catch {}
           audioStreamRef.current?.endSequence()
         })
 
+        client.addListener(AnamEvent.CONNECTION_CLOSED, (reason) => {
+          console.warn('[meet] Anam connection closed:', reason)
+        })
+
+        // streamToVideoElement connects to Anam and starts the WebRTC stream
         await client.streamToVideoElement('anam-avatar-video')
       } catch (e) {
         console.warn('[meet] Anam init error:', e.message)
@@ -267,8 +281,13 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
         for (let i = 0; i < float32.length; i++) {
           int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768))
         }
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)))
-        audioStreamRef.current.sendAudioChunk(base64)
+        // btoa(String.fromCharCode(...)) blows stack on large buffers — use chunked encoding
+        const bytes = new Uint8Array(int16.buffer)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+        }
+        audioStreamRef.current.sendAudioChunk(btoa(binary))
       }
 
       source.connect(processor)
