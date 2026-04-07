@@ -116,7 +116,14 @@ export default function MeetPage() {
             Please allow microphone access when your browser asks — Emma needs to hear you.
           </div>
         </div>
-        <button onClick={() => setState(STATE.CALL)} style={{
+        <button onClick={() => {
+          // Resume AudioContext on user gesture — required by browsers to allow audio playback
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)()
+            ctx.resume().catch(() => {})
+          } catch {}
+          setState(STATE.CALL)
+        }} style={{
           width: '100%', padding: '15px', borderRadius: 14,
           background: '#7c5cfc', color: '#fff', border: 'none',
           fontSize: 16, fontWeight: 700, cursor: 'pointer',
