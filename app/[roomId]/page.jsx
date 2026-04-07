@@ -166,6 +166,8 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
 
   const [screenshotUrl, setScreenshotUrl] = useState(null)
   const prevUrlRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const nextPlayTimeRef = useRef(0)
 
   // Anam joins the room server-side as 'anam-avatar-agent' and publishes a video track.
   // We just find that participant and render their video track — no @anam-ai/js-sdk needed.
@@ -177,21 +179,57 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     p.identity !== localParticipant?.identity
   )
 
-  // Receive screenshot frames via data channel (topic: 'screen')
+  // Initialize Web Audio context (must be created/resumed after user gesture)
+  useEffect(() => {
+    try {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 })
+      audioCtxRef.current.resume().catch(() => {})
+    } catch {}
+    return () => { audioCtxRef.current?.close().catch(() => {}) }
+  }, [])
+
+  // Receive data channel messages — screen frames (topic: 'screen') + audio PCM (topic: 'audio')
   useEffect(() => {
     if (!room) return
     const JPEG_MAGIC_1 = 0xFF, JPEG_MAGIC_2 = 0xD8
+
     const handler = (payload, participant, kind, topic) => {
       try {
-        const isScreen = topic === 'screen' || (payload[0] === JPEG_MAGIC_1 && payload[1] === JPEG_MAGIC_2)
-        if (!isScreen) return
-        const blob = new Blob([payload], { type: 'image/jpeg' })
-        const newUrl = URL.createObjectURL(blob)
-        setScreenshotUrl(newUrl)
-        if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current)
-        prevUrlRef.current = newUrl
+        // ── Screen frame ──
+        if (topic === 'screen' || (payload[0] === JPEG_MAGIC_1 && payload[1] === JPEG_MAGIC_2 && topic !== 'audio')) {
+          const blob = new Blob([payload], { type: 'image/jpeg' })
+          const newUrl = URL.createObjectURL(blob)
+          setScreenshotUrl(newUrl)
+          if (prevUrlRef.current) URL.revokeObjectURL(prevUrlRef.current)
+          prevUrlRef.current = newUrl
+          return
+        }
+
+        // ── Audio PCM (24kHz mono 16-bit LE) ──
+        if (topic === 'audio') {
+          const ctx = audioCtxRef.current
+          if (!ctx) return
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+
+          const int16 = new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength / 2)
+          const float32 = new Float32Array(int16.length)
+          for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768
+
+          const buffer = ctx.createBuffer(1, float32.length, 24000)
+          buffer.getChannelData(0).set(float32)
+
+          const source = ctx.createBufferSource()
+          source.buffer = buffer
+          source.connect(ctx.destination)
+
+          const now = ctx.currentTime
+          if (nextPlayTimeRef.current < now) nextPlayTimeRef.current = now + 0.05
+          source.start(nextPlayTimeRef.current)
+          nextPlayTimeRef.current += buffer.duration
+        }
       } catch {}
     }
+
     room.on(RoomEvent.DataReceived, handler)
     return () => room.off(RoomEvent.DataReceived, handler)
   }, [room])
@@ -210,7 +248,6 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <RoomAudioRenderer />
 
       {/* Header */}
       <div style={{
