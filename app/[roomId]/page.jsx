@@ -196,18 +196,16 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
         const client = createClient(sessionToken, { disableInputAudio: true })
         anamClientRef.current = client
 
-        // Create the audio input stream immediately after client is created —
-        // before streamToVideoElement so it's ready when CONNECTION_ESTABLISHED fires.
-        // Anam audio passthrough requires 16000 Hz (docs spec) — we downsample from 24kHz in the pipe.
-        audioStreamRef.current = client.createAgentAudioInputStream({
-          encoding: 'pcm_s16le',
-          sampleRate: 16000,
-          channels: 1,
-        })
-
         client.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
           if (cancelled) return
           console.log('[meet] Anam connected — avatar ready')
+          // createAgentAudioInputStream must be called AFTER session is started
+          // (after CONNECTION_ESTABLISHED), not before — "session is not started" error otherwise
+          audioStreamRef.current = client.createAgentAudioInputStream({
+            encoding: 'pcm_s16le',
+            sampleRate: 16000,
+            channels: 1,
+          })
           setAnamReady(true)
         })
 
@@ -293,9 +291,13 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
         audioStreamRef.current.sendAudioChunk(btoa(binary))
       }
 
+      // Connect processor to a silent gain (value=0) — keeps AudioContext alive
+      // but prevents double-playback. RoomAudioRenderer already handles audio output.
+      const silentGain = audioCtx.createGain()
+      silentGain.gain.value = 0
       source.connect(processor)
-      // Connecting to destination keeps AudioContext alive; audio plays via RoomAudioRenderer
-      processor.connect(audioCtx.destination)
+      processor.connect(silentGain)
+      silentGain.connect(audioCtx.destination)
 
       return () => {
         try { source.disconnect(); processor.disconnect(); audioCtx.close() } catch {}
