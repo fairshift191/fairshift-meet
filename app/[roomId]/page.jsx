@@ -24,6 +24,7 @@ export default function MeetPage() {
   const [livekitUrl, setLivekitUrl] = useState(null)
   const [callInfo,   setCallInfo]   = useState(null)
   const [error,      setError]      = useState(null)
+  const audioCtxRef  = useRef(null)
 
   useEffect(() => {
     if (!roomId) return
@@ -117,11 +118,11 @@ export default function MeetPage() {
           </div>
         </div>
         <button onClick={() => {
-          // Resume AudioContext on user gesture — required by browsers to allow audio playback
+          // MUST create AudioContext inside user gesture — browsers block audio otherwise
           try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)()
-            ctx.resume().catch(() => {})
-          } catch {}
+            audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 })
+            audioCtxRef.current.resume()
+          } catch(e) { console.warn('AudioContext failed:', e) }
           setState(STATE.CALL)
         }} style={{
           width: '100%', padding: '15px', borderRadius: 14,
@@ -148,7 +149,7 @@ export default function MeetPage() {
         onDisconnected={() => setState(STATE.ENDED)}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
       >
-        <CallUI agentName={callInfo?.agent_name || 'Emma'} personaId={callInfo?.persona_id} roomId={roomId} onLeave={() => setState(STATE.ENDED)} />
+        <CallUI agentName={callInfo?.agent_name || 'Emma'} personaId={callInfo?.persona_id} roomId={roomId} audioCtxRef={audioCtxRef} onLeave={() => setState(STATE.ENDED)} />
       </LiveKitRoom>
     </div>
   )
@@ -157,7 +158,7 @@ export default function MeetPage() {
 }
 
 // ─── Call UI ──────────────────────────────────────────────────────────────────
-function CallUI({ agentName, personaId, roomId, onLeave }) {
+function CallUI({ agentName, personaId, roomId, audioCtxRef, onLeave }) {
   const connectionState = useConnectionState()
   const room = useRoomContext()
   const participants = useParticipants()
@@ -166,7 +167,6 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
 
   const [screenshotUrl, setScreenshotUrl] = useState(null)
   const prevUrlRef = useRef(null)
-  const audioCtxRef = useRef(null)
   const nextPlayTimeRef = useRef(0)
 
   // Anam joins the room server-side as 'anam-avatar-agent' and publishes a video track.
@@ -178,15 +178,6 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     p.identity !== 'anam-avatar-agent' &&
     p.identity !== localParticipant?.identity
   )
-
-  // Initialize Web Audio context (must be created/resumed after user gesture)
-  useEffect(() => {
-    try {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 })
-      audioCtxRef.current.resume().catch(() => {})
-    } catch {}
-    return () => { audioCtxRef.current?.close().catch(() => {}) }
-  }, [])
 
   // Receive data channel messages — screen frames (topic: 'screen') + audio PCM (topic: 'audio')
   useEffect(() => {
