@@ -197,10 +197,11 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
         anamClientRef.current = client
 
         // Create the audio input stream immediately after client is created —
-        // before streamToVideoElement so it's ready when CONNECTION_ESTABLISHED fires
+        // before streamToVideoElement so it's ready when CONNECTION_ESTABLISHED fires.
+        // Anam audio passthrough requires 16000 Hz (docs spec) — we downsample from 24kHz in the pipe.
         audioStreamRef.current = client.createAgentAudioInputStream({
           encoding: 'pcm_s16le',
-          sampleRate: 24000,
+          sampleRate: 16000,
           channels: 1,
         })
 
@@ -269,7 +270,9 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     if (!mediaTrack) return
 
     try {
-      const audioCtx = new AudioContext({ sampleRate: 24000 })
+      // AudioContext at 16000 Hz — browser resampler automatically converts Emma's 24kHz
+      // WebRTC audio down to 16kHz, which is what Anam audio passthrough requires.
+      const audioCtx = new AudioContext({ sampleRate: 16000 })
       audioCtxRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(new MediaStream([mediaTrack]))
       const processor = audioCtx.createScriptProcessor(4096, 1, 1)
@@ -281,7 +284,7 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
         for (let i = 0; i < float32.length; i++) {
           int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768))
         }
-        // btoa(String.fromCharCode(...)) blows stack on large buffers — use chunked encoding
+        // Chunked btoa — avoids stack overflow on large buffers
         const bytes = new Uint8Array(int16.buffer)
         let binary = ''
         for (let i = 0; i < bytes.length; i += 8192) {
