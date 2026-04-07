@@ -1,7 +1,7 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { ConnectionState } from 'livekit-client'
 import { RoomEvent } from 'livekit-client'
 import {
@@ -11,7 +11,10 @@ import {
   useRoomContext,
   useParticipants,
   useLocalParticipant,
+  useTracks,
 } from '@livekit/components-react'
+import { Track } from 'livekit-client'
+import { createClient, AnamEvent } from '@anam-ai/js-sdk'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
 
@@ -139,7 +142,7 @@ export default function MeetPage() {
         onDisconnected={() => setState(STATE.ENDED)}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
       >
-        <CallUI agentName={callInfo?.agent_name || 'Emma'} onLeave={() => setState(STATE.ENDED)} />
+        <CallUI agentName={callInfo?.agent_name || 'Emma'} personaId={callInfo?.persona_id} roomId={roomId} onLeave={() => setState(STATE.ENDED)} />
       </LiveKitRoom>
     </div>
   )
@@ -148,7 +151,7 @@ export default function MeetPage() {
 }
 
 // ─── Call UI ──────────────────────────────────────────────────────────────────
-function CallUI({ agentName, onLeave }) {
+function CallUI({ agentName, personaId, roomId, onLeave }) {
   const connectionState = useConnectionState()
   const room = useRoomContext()
   const participants = useParticipants()
@@ -157,6 +160,57 @@ function CallUI({ agentName, onLeave }) {
 
   const [screenshotUrl, setScreenshotUrl] = useState(null)
   const prevUrlRef = useRef(null)
+
+  // Anam avatar state
+  const anamClientRef = useRef(null)
+  const audioStreamRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const [anamReady, setAnamReady] = useState(false)
+
+  // Init Anam avatar when persona is configured
+  useEffect(() => {
+    if (!personaId || !roomId) return
+    let cancelled = false
+
+    const initAnam = async () => {
+      try {
+        const res = await fetch(`https://api.fairshift.co/api/emma/calls/avatar-session/${roomId}`, { method: 'POST' })
+        if (!res.ok || cancelled) return
+        const { sessionToken } = await res.json()
+        if (!sessionToken || cancelled) return
+
+        const client = createClient(sessionToken)
+        anamClientRef.current = client
+
+        client.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
+          if (cancelled) return
+          setAnamReady(true)
+          // Create audio stream for lip-sync passthrough
+          audioStreamRef.current = client.createAgentAudioInputStream({
+            encoding: 'pcm_s16le',
+            sampleRate: 24000,
+            channels: 1,
+          })
+        })
+
+        client.addListener(AnamEvent.USER_SPEECH_STARTED, () => {
+          client.interruptPersona()
+          audioStreamRef.current?.endSequence()
+        })
+
+        await client.streamToVideoElement('anam-avatar-video')
+      } catch (e) {
+        console.warn('[meet] Anam init error:', e.message)
+      }
+    }
+
+    initAnam()
+    return () => {
+      cancelled = true
+      try { audioCtxRef.current?.close() } catch {}
+      try { anamClientRef.current?.stopStreaming() } catch {}
+    }
+  }, [personaId, roomId])
 
   const agentParticipant  = participants.find(p => p.identity.startsWith('agent_'))
   const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
@@ -180,6 +234,43 @@ function CallUI({ agentName, onLeave }) {
     room.on(RoomEvent.DataReceived, handler)
     return () => room.off(RoomEvent.DataReceived, handler)
   }, [room])
+
+  // Pipe agent's LiveKit audio → Anam lip-sync when avatar is active
+  useEffect(() => {
+    if (!anamReady || !audioStreamRef.current || !agentParticipant) return
+
+    const agentPubs = [...agentParticipant.trackPublications.values()]
+    const audioPub = agentPubs.find(p => p.track?.kind === 'audio')
+    if (!audioPub?.track?.mediaStreamTrack) return
+
+    try {
+      const audioCtx = new AudioContext({ sampleRate: 24000 })
+      audioCtxRef.current = audioCtx
+      const source = audioCtx.createMediaStreamSource(new MediaStream([audioPub.track.mediaStreamTrack]))
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+
+      processor.onaudioprocess = (e) => {
+        if (!audioStreamRef.current) return
+        const float32 = e.inputBuffer.getChannelData(0)
+        const int16 = new Int16Array(float32.length)
+        for (let i = 0; i < float32.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768))
+        }
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)))
+        audioStreamRef.current.sendAudioChunk(base64)
+      }
+
+      source.connect(processor)
+      // NOTE: connect to destination only to keep AudioContext running; actual audio plays via LiveKit
+      processor.connect(audioCtx.destination)
+
+      return () => {
+        try { source.disconnect(); processor.disconnect(); audioCtx.close() } catch {}
+      }
+    } catch (e) {
+      console.warn('[meet] Audio pipe error:', e.message)
+    }
+  }, [anamReady, agentParticipant])
 
   const handleLeave = () => {
     try { room.disconnect() } catch {}
@@ -224,7 +315,26 @@ function CallUI({ agentName, onLeave }) {
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center', gap: 16,
             }}>
-              <AgentAvatar name={agentName} size={72} speaking={agentParticipant?.isSpeaking} />
+              {/* Anam avatar video — shown when persona is configured */}
+              {personaId && (
+                <video
+                  id="anam-avatar-video"
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{
+                    width: 200, height: 200, borderRadius: '50%',
+                    objectFit: 'cover',
+                    display: anamReady ? 'block' : 'none',
+                    boxShadow: agentParticipant?.isSpeaking ? '0 0 0 4px #22C55E, 0 0 24px rgba(34,197,94,0.4)' : '0 0 0 2px rgba(255,255,255,0.1)',
+                    transition: 'box-shadow 0.2s',
+                  }}
+                />
+              )}
+              {/* Fallback blob avatar when no persona or Anam not ready */}
+              {(!personaId || !anamReady) && (
+                <AgentAvatar name={agentName} size={72} speaking={agentParticipant?.isSpeaking} />
+              )}
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', marginBottom: 6 }}>
                   {isConnected ? `${agentName} is preparing your demo…` : 'Connecting…'}
