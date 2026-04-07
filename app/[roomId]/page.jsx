@@ -12,7 +12,8 @@ import {
   useParticipants,
   useLocalParticipant,
 } from '@livekit/components-react'
-import { createClient, AnamEvent } from '@anam-ai/js-sdk'
+import { Track } from 'livekit-client'
+import { VideoTrack, useParticipantTracks } from '@livekit/components-react'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
 
@@ -159,85 +160,17 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
   const [screenshotUrl, setScreenshotUrl] = useState(null)
   const prevUrlRef = useRef(null)
 
-  // Anam avatar state
-  const anamClientRef = useRef(null)
-  const audioStreamRef = useRef(null)
-  const audioCtxRef = useRef(null)
-  const [anamReady, setAnamReady] = useState(false)
-  const prevAgentSpeaking = useRef(false)
+  // Anam joins the room server-side as 'anam-avatar-agent' and publishes a video track.
+  // We just find that participant and render their video track — no @anam-ai/js-sdk needed.
+  const anamParticipant = participants.find(p => p.identity === 'anam-avatar-agent')
+  const agentParticipant = participants.find(p => p.identity.startsWith('agent_') && p.identity !== 'anam-avatar-agent')
+  const humanParticipants = participants.filter(p =>
+    !p.identity.startsWith('agent_') &&
+    p.identity !== 'anam-avatar-agent' &&
+    p.identity !== localParticipant?.identity
+  )
 
-  // Increment whenever a track is subscribed — used to re-trigger the audio pipe effect
-  const [trackVersion, setTrackVersion] = useState(0)
-  useEffect(() => {
-    if (!room) return
-    const handler = () => setTrackVersion(v => v + 1)
-    room.on(RoomEvent.TrackSubscribed, handler)
-    return () => room.off(RoomEvent.TrackSubscribed, handler)
-  }, [room])
-
-  // Init Anam avatar when persona is configured
-  useEffect(() => {
-    if (!personaId || !roomId) return
-    let cancelled = false
-
-    const initAnam = async () => {
-      try {
-        const res = await fetch(`https://api.fairshift.co/api/emma/calls/avatar-session/${roomId}`, { method: 'POST' })
-        if (!res.ok || cancelled) {
-          console.warn('[meet] avatar-session failed:', res.status, await res.text().catch(() => ''))
-          return
-        }
-        const data = await res.json()
-        const sessionToken = data.sessionToken
-        if (!sessionToken || cancelled) return
-
-        // disableInputAudio: true — Anam must NOT grab the mic.
-        // LiveKit already owns the mic for Emma's prospect audio pipeline.
-        const client = createClient(sessionToken, { disableInputAudio: true })
-        anamClientRef.current = client
-
-        client.addListener(AnamEvent.CONNECTION_ESTABLISHED, () => {
-          if (cancelled) return
-          console.log('[meet] Anam connected — avatar ready')
-          // createAgentAudioInputStream must be called AFTER session is started
-          // (after CONNECTION_ESTABLISHED), not before — "session is not started" error otherwise
-          audioStreamRef.current = client.createAgentAudioInputStream({
-            encoding: 'pcm_s16le',
-            sampleRate: 16000,
-            channels: 1,
-          })
-          setAnamReady(true)
-        })
-
-        client.addListener(AnamEvent.USER_SPEECH_STARTED, () => {
-          try { client.interruptPersona() } catch {}
-          audioStreamRef.current?.endSequence()
-        })
-
-        client.addListener(AnamEvent.CONNECTION_CLOSED, (reason) => {
-          console.warn('[meet] Anam connection closed:', reason)
-        })
-
-        // streamToVideoElement connects to Anam and starts the WebRTC stream
-        await client.streamToVideoElement('anam-avatar-video')
-      } catch (e) {
-        console.warn('[meet] Anam init error:', e.message)
-      }
-    }
-
-    initAnam()
-    return () => {
-      cancelled = true
-      try { audioCtxRef.current?.close() } catch {}
-      try { anamClientRef.current?.stopStreaming() } catch {}
-    }
-  }, [personaId, roomId])
-
-  const agentParticipant  = participants.find(p => p.identity.startsWith('agent_'))
-  const humanParticipants = participants.filter(p => !p.identity.startsWith('agent_') && p.identity !== localParticipant?.identity)
-
-  // Receive screenshot frames via raw room DataReceived event (topic: 'screen')
-  // Falls back to JPEG magic byte detection if topic isn't propagated by the LiveKit relay
+  // Receive screenshot frames via data channel (topic: 'screen')
   useEffect(() => {
     if (!room) return
     const JPEG_MAGIC_1 = 0xFF, JPEG_MAGIC_2 = 0xD8
@@ -256,71 +189,17 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     return () => room.off(RoomEvent.DataReceived, handler)
   }, [room])
 
-  // Pipe agent's LiveKit audio → Anam lip-sync when avatar is active.
-  // trackVersion increments on every TrackSubscribed event so this effect re-runs
-  // when the agent's audio track becomes available, regardless of timing.
-  useEffect(() => {
-    if (!anamReady || !audioStreamRef.current || !agentParticipant) return
-
-    const pubs = [...agentParticipant.trackPublications.values()]
-    const audioPub = pubs.find(p => p.track?.kind === 'audio')
-    const mediaTrack = audioPub?.track?.mediaStreamTrack
-    if (!mediaTrack) return
-
-    try {
-      // AudioContext at 16000 Hz — browser resampler automatically converts Emma's 24kHz
-      // WebRTC audio down to 16kHz, which is what Anam audio passthrough requires.
-      const audioCtx = new AudioContext({ sampleRate: 16000 })
-      audioCtxRef.current = audioCtx
-      const source = audioCtx.createMediaStreamSource(new MediaStream([mediaTrack]))
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-
-      processor.onaudioprocess = (e) => {
-        if (!audioStreamRef.current) return
-        const float32 = e.inputBuffer.getChannelData(0)
-        const int16 = new Int16Array(float32.length)
-        for (let i = 0; i < float32.length; i++) {
-          int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768))
-        }
-        // Chunked btoa — avoids stack overflow on large buffers
-        const bytes = new Uint8Array(int16.buffer)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i += 8192) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
-        }
-        audioStreamRef.current.sendAudioChunk(btoa(binary))
-      }
-
-      // Connect processor to a silent gain (value=0) — keeps AudioContext alive
-      // but prevents double-playback. RoomAudioRenderer already handles audio output.
-      const silentGain = audioCtx.createGain()
-      silentGain.gain.value = 0
-      source.connect(processor)
-      processor.connect(silentGain)
-      silentGain.connect(audioCtx.destination)
-
-      return () => {
-        try { source.disconnect(); processor.disconnect(); audioCtx.close() } catch {}
-      }
-    } catch (e) {
-      console.warn('[meet] Audio pipe error:', e.message)
-    }
-  }, [anamReady, agentParticipant, trackVersion])
-
-  // Signal Anam end-of-speech when agent stops talking (so lip-sync resets cleanly)
-  useEffect(() => {
-    if (!anamReady || !audioStreamRef.current) return
-    const isSpeaking = !!agentParticipant?.isSpeaking
-    if (prevAgentSpeaking.current && !isSpeaking) {
-      audioStreamRef.current?.endSequence()
-    }
-    prevAgentSpeaking.current = isSpeaking
-  }, [agentParticipant?.isSpeaking, anamReady])
-
   const handleLeave = () => {
     try { room.disconnect() } catch {}
     onLeave()
   }
+
+  // Get Anam's video track for rendering
+  const anamVideoTrack = anamParticipant
+    ? [...anamParticipant.trackPublications.values()].find(p => p.kind === Track.Kind.Video && p.track)
+    : null
+
+  const isSpeaking = agentParticipant?.isSpeaking || anamParticipant?.isSpeaking
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -347,7 +226,7 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
       {/* Main area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
 
-        {/* Screen — JPEG screenshots from Emma's Playwright browser */}
+        {/* Main view — screenshot or avatar */}
         <div style={{ flex: 1, background: '#0a0a0a', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {screenshotUrl ? (
             <img
@@ -356,29 +235,21 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
               style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
             />
           ) : (
-            <div style={{
-              display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center', gap: 16,
-            }}>
-              {/* Anam avatar video — shown when persona is configured */}
-              {personaId && (
-                <video
-                  id="anam-avatar-video"
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{
-                    width: 200, height: 200, borderRadius: '50%',
-                    objectFit: 'cover',
-                    display: anamReady ? 'block' : 'none',
-                    boxShadow: agentParticipant?.isSpeaking ? '0 0 0 4px #22C55E, 0 0 24px rgba(34,197,94,0.4)' : '0 0 0 2px rgba(255,255,255,0.1)',
-                    transition: 'box-shadow 0.2s',
-                  }}
-                />
-              )}
-              {/* Fallback blob avatar when no persona or Anam not ready */}
-              {(!personaId || !anamReady) && (
-                <AgentAvatar name={agentName} size={72} speaking={agentParticipant?.isSpeaking} />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+              {/* Anam avatar — renders as a normal LiveKit video track */}
+              {anamVideoTrack?.track ? (
+                <div style={{
+                  width: 240, height: 240, borderRadius: '50%', overflow: 'hidden', flexShrink: 0,
+                  boxShadow: isSpeaking ? '0 0 0 4px #22C55E, 0 0 32px rgba(34,197,94,0.4)' : '0 0 0 2px rgba(255,255,255,0.1)',
+                  transition: 'box-shadow 0.2s',
+                }}>
+                  <VideoTrack
+                    trackRef={{ participant: anamParticipant, publication: anamVideoTrack, source: Track.Source.Camera }}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                </div>
+              ) : (
+                <AgentAvatar name={agentName} size={72} speaking={isSpeaking} />
               )}
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', marginBottom: 6 }}>
@@ -400,21 +271,12 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
           display: 'flex', flexDirection: 'column', gap: 8,
           padding: 10, flexShrink: 0, overflowY: 'auto',
         }}>
-          {/* Emma tile */}
-          <ParticipantCard
-            name={agentName}
-            isAgent={true}
-            isSpeaking={agentParticipant?.isSpeaking}
-          />
-
-          {/* Local participant */}
+          <ParticipantCard name={agentName} isAgent={true} isSpeaking={isSpeaking} />
           <ParticipantCard
             name={localParticipant?.identity?.replace('prospect_', '') || 'You'}
             isLocal={true}
             isSpeaking={localParticipant?.isSpeaking}
           />
-
-          {/* Other humans */}
           {humanParticipants.map(p => (
             <ParticipantCard
               key={p.identity}
