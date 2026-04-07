@@ -11,9 +11,7 @@ import {
   useRoomContext,
   useParticipants,
   useLocalParticipant,
-  useTracks,
 } from '@livekit/components-react'
-import { Track } from 'livekit-client'
 import { createClient, AnamEvent } from '@anam-ai/js-sdk'
 
 const STATE = { LOADING: 'loading', LOBBY: 'lobby', CALL: 'call', ENDED: 'ended', ERROR: 'error' }
@@ -168,13 +166,14 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
   const [anamReady, setAnamReady] = useState(false)
   const prevAgentSpeaking = useRef(false)
 
-  // Use useTracks to reliably get agent audio track (re-renders when track subscribes)
-  const allAudioTracks = useTracks(
-    [{ source: Track.Source.Microphone, withPlaceholder: false }],
-    { onlySubscribed: true }
-  )
-  const agentAudioEntry = allAudioTracks.find(t => t.participant?.identity?.startsWith('agent_'))
-  const agentAudioMediaTrack = agentAudioEntry?.track?.mediaStreamTrack
+  // Increment whenever a track is subscribed — used to re-trigger the audio pipe effect
+  const [trackVersion, setTrackVersion] = useState(0)
+  useEffect(() => {
+    if (!room) return
+    const handler = () => setTrackVersion(v => v + 1)
+    room.on(RoomEvent.TrackSubscribed, handler)
+    return () => room.off(RoomEvent.TrackSubscribed, handler)
+  }, [room])
 
   // Init Anam avatar when persona is configured
   useEffect(() => {
@@ -244,16 +243,21 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     return () => room.off(RoomEvent.DataReceived, handler)
   }, [room])
 
-  // Pipe agent's LiveKit audio → Anam lip-sync when avatar is active
-  // Depends on agentAudioMediaTrack (from useTracks) so it re-runs when the agent's
-  // audio track actually becomes available/subscribed, regardless of timing.
+  // Pipe agent's LiveKit audio → Anam lip-sync when avatar is active.
+  // trackVersion increments on every TrackSubscribed event so this effect re-runs
+  // when the agent's audio track becomes available, regardless of timing.
   useEffect(() => {
-    if (!anamReady || !audioStreamRef.current || !agentAudioMediaTrack) return
+    if (!anamReady || !audioStreamRef.current || !agentParticipant) return
+
+    const pubs = [...agentParticipant.trackPublications.values()]
+    const audioPub = pubs.find(p => p.track?.kind === 'audio')
+    const mediaTrack = audioPub?.track?.mediaStreamTrack
+    if (!mediaTrack) return
 
     try {
       const audioCtx = new AudioContext({ sampleRate: 24000 })
       audioCtxRef.current = audioCtx
-      const source = audioCtx.createMediaStreamSource(new MediaStream([agentAudioMediaTrack]))
+      const source = audioCtx.createMediaStreamSource(new MediaStream([mediaTrack]))
       const processor = audioCtx.createScriptProcessor(4096, 1, 1)
 
       processor.onaudioprocess = (e) => {
@@ -268,7 +272,7 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
       }
 
       source.connect(processor)
-      // Connect to destination keeps AudioContext alive; actual audio plays via RoomAudioRenderer
+      // Connecting to destination keeps AudioContext alive; audio plays via RoomAudioRenderer
       processor.connect(audioCtx.destination)
 
       return () => {
@@ -277,7 +281,7 @@ function CallUI({ agentName, personaId, roomId, onLeave }) {
     } catch (e) {
       console.warn('[meet] Audio pipe error:', e.message)
     }
-  }, [anamReady, agentAudioMediaTrack])
+  }, [anamReady, agentParticipant, trackVersion])
 
   // Signal Anam end-of-speech when agent stops talking (so lip-sync resets cleanly)
   useEffect(() => {
