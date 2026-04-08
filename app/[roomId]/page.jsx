@@ -199,6 +199,10 @@ function CallUI({ agentName, personaId, roomId, audioCtxRef, onLeave }) {
 
         // ── Audio PCM (24kHz mono 16-bit LE) ──
         if (topic === 'audio') {
+          // Lazy-create AudioContext if not already set (fallback for edge cases)
+          if (!audioCtxRef.current) {
+            try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 }) } catch {}
+          }
           const ctx = audioCtxRef.current
           if (!ctx) { console.warn('[meet] No AudioContext'); return }
           if (ctx.state === 'suspended') ctx.resume()
