@@ -2,8 +2,8 @@ import '@livekit/components-styles'
 import './globals.css'
 
 export const metadata = {
-  title: 'Fairshift — Sales Call',
-  description: 'Join your Fairshift product demo call',
+  title: 'Fairshift Beam',
+  description: 'Join your AI-powered video call',
 }
 
 export default function RootLayout({ children }) {
