@@ -199,24 +199,26 @@ function CallUI({ agentName, personaId, roomId, audioCtxRef, onLeave }) {
         // ── Audio PCM (24kHz mono 16-bit LE) ──
         if (topic === 'audio') {
           const ctx = audioCtxRef.current
-          if (!ctx) return
-          if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+          if (!ctx) { console.warn('[meet] No AudioContext'); return }
+          if (ctx.state === 'suspended') ctx.resume()
 
-          const int16 = new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength / 2)
+          // Copy into a fresh ArrayBuffer — payload.buffer may be a shared pool with non-zero byteOffset
+          const copy = payload.slice(0)
+          const int16 = new Int16Array(copy.buffer)
           const float32 = new Float32Array(int16.length)
           for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768
 
-          const buffer = ctx.createBuffer(1, float32.length, 24000)
-          buffer.getChannelData(0).set(float32)
+          const audioBuf = ctx.createBuffer(1, float32.length, 24000)
+          audioBuf.getChannelData(0).set(float32)
 
           const source = ctx.createBufferSource()
-          source.buffer = buffer
+          source.buffer = audioBuf
           source.connect(ctx.destination)
 
           const now = ctx.currentTime
           if (nextPlayTimeRef.current < now) nextPlayTimeRef.current = now + 0.05
           source.start(nextPlayTimeRef.current)
-          nextPlayTimeRef.current += buffer.duration
+          nextPlayTimeRef.current += audioBuf.duration
         }
       } catch {}
     }
