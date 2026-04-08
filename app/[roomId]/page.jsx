@@ -186,6 +186,7 @@ function CallUI({ agentName, personaId, roomId, audioCtxRef, onLeave }) {
 
     const handler = (payload, participant, kind, topic) => {
       try {
+        if (typeof window !== 'undefined' && !window._dcLogged) { window._dcLogged = true; console.log('[meet] DataReceived firing, topic:', topic, 'bytes:', payload?.byteLength) }
         // ── Screen frame ──
         if (topic === 'screen' || (payload[0] === JPEG_MAGIC_1 && payload[1] === JPEG_MAGIC_2 && topic !== 'audio')) {
           const blob = new Blob([payload], { type: 'image/jpeg' })
