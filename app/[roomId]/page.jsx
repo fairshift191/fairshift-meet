@@ -296,6 +296,37 @@ function CallUI({ agentName, companyName, personaId, roomId, audioCtxRef, onLeav
   const nextPlayTimeRef = useRef(0)
   const [callDuration, setCallDuration] = useState(0)
   const startRef = useRef(null)
+  const agentAudioRef = useRef(false)  // true once Emma's published audio track is playing — disables the PCM fallback
+
+  // Emma's voice as a real audio track (newer agent worker). Attach it and mute
+  // the data-channel PCM path so audio never plays twice. Anam's own audio track
+  // ('anam-avatar-agent') is intentionally not attached — same as before.
+  useEffect(() => {
+    if (!room) return
+    const attached = []
+    const tryAttach = (track, participant) => {
+      if (track.kind !== Track.Kind.Audio) return
+      if (!participant.identity?.startsWith('agent_')) return
+      const el = track.attach()
+      el.autoplay = true
+      el.style.display = 'none'
+      document.body.appendChild(el)
+      attached.push([track, el])
+      agentAudioRef.current = true
+    }
+    for (const p of room.remoteParticipants.values()) {
+      for (const pub of p.trackPublications.values()) {
+        if (pub.track) tryAttach(pub.track, p)
+      }
+    }
+    const onSub = (track, pub, participant) => tryAttach(track, participant)
+    room.on(RoomEvent.TrackSubscribed, onSub)
+    return () => {
+      room.off(RoomEvent.TrackSubscribed, onSub)
+      for (const [track, el] of attached) { try { track.detach(el); el.remove() } catch {} }
+      agentAudioRef.current = false
+    }
+  }, [room])
 
   // Call timer
   useEffect(() => {
@@ -329,6 +360,7 @@ function CallUI({ agentName, companyName, personaId, roomId, audioCtxRef, onLeav
           return
         }
         if (topic === 'audio') {
+          if (agentAudioRef.current) return  // real audio track is playing — skip PCM fallback
           if (!audioCtxRef.current) {
             try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 }) } catch {}
           }
